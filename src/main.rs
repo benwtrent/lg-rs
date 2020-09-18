@@ -9,16 +9,19 @@ use std::fs;
 use std::io::{self, BufRead, BufReader};
 
 fn main() {
+    let mut g = grok::Grok::with_patterns();
+
     let filter_patterns = vec![
-        regex::Regex::new(r"blk_(|-)[0-9]+").expect("bad pattern"), //blockid
-        regex::Regex::new(r"(/|)([0-9]+\.){3}[0-9]+(:[0-9]+|)(:|)").expect("bad pattern"), //IP
-        regex::Regex::new(r"([^A-Za-z0-9])(\-?\+?\d+)([^A-Za-z0-9])|[0-9]+$").expect("bad pattern"), //Num
+        g.compile("blk_(|-)[0-9]+", true).expect("bad pattern"), //blockid
+        g.compile("%{IPV4:ip_address}", true).expect("bad pattern"), //IP
+        g.compile("%{NUMBER:number}", true).expect("bad pattern"), //Num
     ];
     let mut drain = DrainTree::new()
         .filter_patterns(filter_patterns)
         .max_depth(4)
         .max_children(100)
-        .min_similarity(0.5);
+        .min_similarity(0.5)
+        .log_pattern(g.compile("%{NUMBER:date} %{NUMBER:time} %{NUMBER:proc} %{LOGLEVEL:level} %{DATA:component}: %{GREEDYDATA:content}", true).expect("bad pattern"), "content");
     let input = env::args().nth(1);
     let reader: Box<dyn BufRead> = match input {
         None => Box::new(BufReader::new(io::stdin())),
@@ -26,8 +29,7 @@ fn main() {
     };
     for line in reader.lines() {
         if let Ok(s) = line {
-            let l = s.split(" ").skip(5).collect::<Vec<&str>>().join(" ");
-            drain.add_log_line(l);
+            drain.add_log_line(s);
         }
     }
     drain.log_groups().iter().for_each(|f| println!("{}", *f));

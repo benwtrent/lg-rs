@@ -1,4 +1,4 @@
-use regex;
+use grok;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -287,7 +287,9 @@ pub struct DrainTree {
     max_depth: u16,
     max_children: u16,
     min_similarity: f32,
-    filter_patterns: Vec<regex::Regex>,
+    overall_pattern: Option<grok::Pattern>,
+    drain_field: Option<String>,
+    filter_patterns: Vec<grok::Pattern>,
 }
 
 impl Display for DrainTree {
@@ -308,6 +310,8 @@ impl DrainTree {
             max_depth: 5,
             max_children: 100,
             min_similarity: 0.5,
+            overall_pattern: None,
+            drain_field: None
         }
     }
 
@@ -326,20 +330,39 @@ impl DrainTree {
         self
     }
 
-    pub fn filter_patterns(mut self, filter_patterns: Vec<regex::Regex>) -> Self {
+    pub fn filter_patterns(mut self, filter_patterns: Vec<grok::Pattern>) -> Self {
         self.filter_patterns = filter_patterns;
         self
     }
 
-    fn process(filter_patterns: &Vec<regex::Regex>, log_line: String) -> Vec<Token> {
+    pub fn log_pattern(mut self, overall_pattern: grok::Pattern, drain_field: &str) -> Self {
+        self.overall_pattern = Some(overall_pattern);
+        self.drain_field = Some(String::from(drain_field));
+        self
+    }
+
+    fn process(filter_patterns: &Vec<grok::Pattern>, log_line: String) -> Vec<Token> {
         log_line
             .split(' ')
             .map(|t| t.trim())
             .map(|t| {
-                if filter_patterns.iter().any(|p| p.is_match(t)) {
-                    Token::WildCard
-                } else {
-                    Token::Val(String::from(t))
+                match filter_patterns.iter().map(|p| p.match_against(t)).filter(|o| o.is_some()).next() {
+                    Some(m) => {
+                        match m {
+                            Some(matches) => {
+                                println!("{:?}", matches);
+
+                                match matches.iter().next() {
+                                    Some((name, pattern)) => {
+                                        Token::Val(String::from(name))
+                                    },
+                                    None => Token::WildCard
+                                }
+                            },
+                            None => Token::Val(String::from(t))
+                        }
+                    },
+                    None => Token::Val(String::from(t))
                 }
             })
             .collect()
@@ -381,7 +404,21 @@ impl DrainTree {
     }
 
     pub fn add_log_line(&mut self, log_line: String) {
-        let tokens = DrainTree::process(&self.filter_patterns, log_line);
+        let processed_line : Option<String> = match &self.overall_pattern {
+            Some(p) => {
+                match p.match_against(log_line.as_str()) {
+                    Some(matches) => {
+                        match matches.get(self.drain_field.as_ref().expect("illegal state. [overall_pattern] set without [drain_field] set").as_str()) {
+                            Some(s) => Option::Some(String::from(s)),
+                            None => Option::None
+                        }
+                    },
+                    None => Option::None
+                }
+            },
+            None => Option::None
+        };
+        let tokens = DrainTree::process(&self.filter_patterns, processed_line.unwrap_or(log_line));
         let len = tokens.len();
         self.root
             .entry(len)
