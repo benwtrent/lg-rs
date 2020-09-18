@@ -1,0 +1,12 @@
+[package]
+name = "lg-rs"
+version = "0.1.0"
+authors = ["Benjamin Trent <4357155+benwtrent@users.noreply.github.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+regex = "1"
+clap = "2"
+grok = "1.1.0"
