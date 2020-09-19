@@ -52,12 +52,12 @@ impl core::cmp::PartialOrd for GroupSimilarity {
     }
 }
 
-pub struct DrainTreeLogGroup {
+pub struct LogCluster {
     log_tokens: Vec<Token>,
     num_matched: u64,
 }
 
-impl fmt::Display for DrainTreeLogGroup {
+impl fmt::Display for LogCluster {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -72,9 +72,9 @@ impl fmt::Display for DrainTreeLogGroup {
     }
 }
 
-impl DrainTreeLogGroup {
-    pub fn new(log_tokens: Vec<Token>) -> DrainTreeLogGroup {
-        DrainTreeLogGroup {
+impl LogCluster {
+    pub fn new(log_tokens: Vec<Token>) -> LogCluster {
+        LogCluster {
             log_tokens,
             num_matched: 1,
         }
@@ -113,8 +113,8 @@ impl DrainTreeLogGroup {
     }
 }
 
-struct LeafNode {
-    log_groups: Vec<DrainTreeLogGroup>,
+struct Leaf {
+    log_groups: Vec<LogCluster>,
 }
 
 struct GroupAndSimilarity {
@@ -122,7 +122,7 @@ struct GroupAndSimilarity {
     similarity: GroupSimilarity,
 }
 
-impl LeafNode {
+impl Leaf {
     fn best_group(&self, log_tokens: &[Token]) -> Option<GroupAndSimilarity> {
         let mut max_similarity = match self.log_groups.get(0) {
             Some(group) => group.similarity(log_tokens),
@@ -152,8 +152,7 @@ impl LeafNode {
         match group {
             Some(gas) => {
                 if gas.similarity.approximate_similarity < *min_similarity {
-                    self.log_groups
-                        .push(DrainTreeLogGroup::new(log_tokens.to_vec()))
+                    self.log_groups.push(LogCluster::new(log_tokens.to_vec()))
                 } else {
                     self.log_groups
                         .get_mut(gas.group_index)
@@ -161,28 +160,26 @@ impl LeafNode {
                         .add_log(log_tokens)
                 }
             }
-            None => self
-                .log_groups
-                .push(DrainTreeLogGroup::new(log_tokens.to_vec())),
+            None => self.log_groups.push(LogCluster::new(log_tokens.to_vec())),
         }
     }
 }
 
-struct InnerNode {
-    children: HashMap<Token, DrainTreeNode>,
+struct Inner {
+    children: HashMap<Token, Node>,
     depth: usize,
 }
 
-enum DrainTreeNode {
-    InnerNode(InnerNode),
-    LeafNode(LeafNode),
+enum Node {
+    Inner(Inner),
+    Leaf(Leaf),
 }
 
-impl Display for DrainTreeNode {
+impl Display for Node {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut str = String::new();
         match self {
-            DrainTreeNode::InnerNode(node) => {
+            Node::Inner(node) => {
                 for (k, v) in node.children.iter() {
                     str += &format!(
                         "{}Token: {} -> Children [{}]\n",
@@ -193,7 +190,7 @@ impl Display for DrainTreeNode {
                     .to_string();
                 }
             }
-            DrainTreeNode::LeafNode(node) => {
+            Node::Leaf(node) => {
                 for lg in node.log_groups.iter() {
                     str += &format!("group [{}]", lg).to_string();
                 }
@@ -203,31 +200,31 @@ impl Display for DrainTreeNode {
     }
 }
 
-impl DrainTreeNode {
-    fn log_groups(&self) -> Vec<&DrainTreeLogGroup> {
+impl Node {
+    fn log_groups(&self) -> Vec<&LogCluster> {
         match self {
-            DrainTreeNode::LeafNode(leaf) => leaf
+            Node::Leaf(leaf) => leaf
                 .log_groups
                 .iter()
                 .map(|n| n.borrow())
-                .collect::<Vec<&DrainTreeLogGroup>>(),
-            DrainTreeNode::InnerNode(inner) => inner
+                .collect::<Vec<&LogCluster>>(),
+            Node::Inner(inner) => inner
                 .children
                 .values()
                 .flat_map(|n| n.log_groups())
-                .collect::<Vec<&DrainTreeLogGroup>>(),
+                .collect::<Vec<&LogCluster>>(),
         }
     }
 
-    fn inner(depth: usize) -> DrainTreeNode {
-        DrainTreeNode::InnerNode(InnerNode {
+    fn inner(depth: usize) -> Node {
+        Node::Inner(Inner {
             children: HashMap::new(),
             depth,
         })
     }
 
-    fn leaf() -> DrainTreeNode {
-        DrainTreeNode::LeafNode(LeafNode { log_groups: vec![] })
+    fn leaf() -> Node {
+        Node::Leaf(Leaf { log_groups: vec![] })
     }
 
     fn add_child_recur(
@@ -250,9 +247,9 @@ impl DrainTreeNode {
             Token::WildCard => Token::WildCard,
         };
         if next == log_tokens.len() - 1 || next == *max_depth as usize {
-            if let DrainTreeNode::InnerNode(node) = self {
-                let child = node.children.entry(token).or_insert(DrainTreeNode::leaf());
-                if let DrainTreeNode::LeafNode(leaf) = child {
+            if let Node::Inner(node) = self {
+                let child = node.children.entry(token).or_insert(Node::leaf());
+                if let Node::Leaf(leaf) = child {
                     let best_group = leaf.best_group(log_tokens);
                     leaf.add_to_group(best_group, min_similarity, log_tokens);
                 }
@@ -260,23 +257,20 @@ impl DrainTreeNode {
             return;
         }
         match self {
-            DrainTreeNode::InnerNode(inner) => {
+            Node::Inner(inner) => {
                 let child = if !inner.children.contains_key(&token)
                     && inner.children.len() > *max_children as usize
                 {
                     inner
                         .children
                         .entry(Token::WildCard)
-                        .or_insert(DrainTreeNode::inner(next))
+                        .or_insert(Node::inner(next))
                 } else {
-                    inner
-                        .children
-                        .entry(token)
-                        .or_insert(DrainTreeNode::inner(next))
+                    inner.children.entry(token).or_insert(Node::inner(next))
                 };
                 child.add_child_recur(next, max_depth, max_children, min_similarity, log_tokens);
             }
-            DrainTreeNode::LeafNode(leaf) => {
+            Node::Leaf(leaf) => {
                 let best_group = leaf.best_group(log_tokens);
                 leaf.add_to_group(best_group, min_similarity, log_tokens);
             }
@@ -285,7 +279,7 @@ impl DrainTreeNode {
 }
 
 pub struct DrainTree {
-    root: HashMap<usize, DrainTreeNode>,
+    root: HashMap<usize, Node>,
     max_depth: u16,
     max_children: u16,
     min_similarity: f32,
@@ -369,19 +363,19 @@ impl DrainTree {
 
     fn dig_inner_prefix_tree<'a>(
         &self,
-        child: &'a DrainTreeNode,
+        child: &'a Node,
         processed_log: &[Token],
-    ) -> Option<&'a DrainTreeLogGroup> {
+    ) -> Option<&'a LogCluster> {
         let mut current_node = child;
         for t in processed_log.iter() {
             match current_node {
-                DrainTreeNode::LeafNode(leaf) => {
+                Node::Leaf(leaf) => {
                     return match leaf.best_group(processed_log) {
                         Some(gas) => Some(&leaf.log_groups[gas.group_index]),
                         None => return None,
                     };
                 }
-                DrainTreeNode::InnerNode(node) => match node.children.get(t) {
+                Node::Inner(node) => match node.children.get(t) {
                     Some(n) => current_node = n,
                     None => return None,
                 },
@@ -390,14 +384,14 @@ impl DrainTree {
         return None;
     }
 
-    fn log_group_for_tokens(&self, processed_log: &[Token]) -> Option<&DrainTreeLogGroup> {
+    fn log_group_for_tokens(&self, processed_log: &[Token]) -> Option<&LogCluster> {
         match self.root.get(&processed_log.len()) {
             Some(node) => self.dig_inner_prefix_tree(node, processed_log),
             None => Option::None,
         }
     }
 
-    pub fn log_group(&self, log: String) -> Option<&DrainTreeLogGroup> {
+    pub fn log_group(&self, log: String) -> Option<&LogCluster> {
         let tokens = DrainTree::process(&self.filter_patterns, log);
         self.log_group_for_tokens(tokens.as_slice())
     }
@@ -421,7 +415,7 @@ impl DrainTree {
         let len = tokens.len();
         self.root
             .entry(len)
-            .or_insert(DrainTreeNode::inner(0))
+            .or_insert(Node::inner(0))
             .add_child_recur(
                 0,
                 &self.max_depth,
@@ -431,11 +425,11 @@ impl DrainTree {
             );
     }
 
-    pub fn log_groups(&self) -> Vec<&DrainTreeLogGroup> {
+    pub fn log_groups(&self) -> Vec<&LogCluster> {
         self.root
             .values()
             .flat_map(|n| n.log_groups())
-            .collect::<Vec<&DrainTreeLogGroup>>()
+            .collect::<Vec<&LogCluster>>()
     }
 }
 
@@ -459,7 +453,7 @@ mod tests {
     fn similarity_check() {
         let tokens = tokens_from(&["foo", WILDCARD, "foo", "bar", "baz"]);
         let template = tokens_from(&["foo", "bar", WILDCARD, "bar", "baz"]);
-        let group = DrainTreeLogGroup::new(template);
+        let group = LogCluster::new(template);
         let similarity = group.similarity(tokens.as_slice());
 
         assert_eq!(similarity.exact_similarity, 0.6);
@@ -470,11 +464,11 @@ mod tests {
     fn best_group() {
         let tokens = tokens_from(&["foo", WILDCARD, "foo", "bar", "baz"]);
 
-        let leaf = LeafNode {
+        let leaf = Leaf {
             log_groups: vec![
-                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", WILDCARD, "bar", "baz"])),
-                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", "other", "bar", "baz"])),
-                DrainTreeLogGroup::new(tokens_from(&["a", "b", WILDCARD, "c", "baz"])),
+                LogCluster::new(tokens_from(&["foo", "bar", WILDCARD, "bar", "baz"])),
+                LogCluster::new(tokens_from(&["foo", "bar", "other", "bar", "baz"])),
+                LogCluster::new(tokens_from(&["a", "b", WILDCARD, "c", "baz"])),
             ],
         };
 
@@ -486,10 +480,10 @@ mod tests {
         assert_eq!(best_group.similarity.exact_similarity, 0.6);
         assert_eq!(best_group.similarity.approximate_similarity, 0.8);
 
-        let leaf = LeafNode {
+        let leaf = Leaf {
             log_groups: vec![
-                DrainTreeLogGroup::new(tokens_from(&["a", "b", WILDCARD, "c", "baz"])),
-                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", "other", "bar", "baz"])),
+                LogCluster::new(tokens_from(&["a", "b", WILDCARD, "c", "baz"])),
+                LogCluster::new(tokens_from(&["foo", "bar", "other", "bar", "baz"])),
             ],
         };
         let best_group = leaf
@@ -505,11 +499,11 @@ mod tests {
     fn add_group() {
         let tokens = tokens_from(&["foo", WILDCARD, "foo", "bar", "baz"]);
         let min_sim = 0.5;
-        let leaf_ctor = || LeafNode {
+        let leaf_ctor = || Leaf {
             log_groups: vec![
-                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", WILDCARD, "bar", "baz"])),
-                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", "other", "bar", "baz"])),
-                DrainTreeLogGroup::new(tokens_from(&["a", "b", WILDCARD, "c", "baz"])),
+                LogCluster::new(tokens_from(&["foo", "bar", WILDCARD, "bar", "baz"])),
+                LogCluster::new(tokens_from(&["foo", "bar", "other", "bar", "baz"])),
+                LogCluster::new(tokens_from(&["a", "b", WILDCARD, "c", "baz"])),
             ],
         };
 
