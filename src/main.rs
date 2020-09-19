@@ -3,7 +3,6 @@ mod drain;
 use crate::drain::DrainTree;
 use clap;
 use grok;
-use regex;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader};

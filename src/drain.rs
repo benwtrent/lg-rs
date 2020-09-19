@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 
+const WILDCARD: &str = "<*>";
+
 #[derive(Eq, PartialEq, Hash)]
 pub enum Token {
     WildCard,
@@ -79,21 +81,21 @@ impl DrainTreeLogGroup {
     }
 
     fn similarity(&self, log: &[Token]) -> GroupSimilarity {
-        let len = self.log_tokens.len();
-        let mut approximate_similarity: usize = 0;
-        let mut exact_similarity: usize = 0;
+        let len = self.log_tokens.len() as f32;
+        let mut approximate_similarity: f32 = 0.0;
+        let mut exact_similarity: f32 = 0.0;
 
         for (pattern, token) in self.log_tokens.iter().zip(log.iter()) {
             if token == pattern {
-                approximate_similarity += 1;
-                exact_similarity += 1;
+                approximate_similarity += 1.0;
+                exact_similarity += 1.0;
             } else if *pattern == Token::WildCard {
-                approximate_similarity += 1;
+                approximate_similarity += 1.0;
             }
         }
         GroupSimilarity {
-            approximate_similarity: (approximate_similarity / len) as f32,
-            exact_similarity: (exact_similarity / len) as f32,
+            approximate_similarity: approximate_similarity / len,
+            exact_similarity: exact_similarity / len,
         }
     }
 
@@ -311,7 +313,7 @@ impl DrainTree {
             max_children: 100,
             min_similarity: 0.5,
             overall_pattern: None,
-            drain_field: None
+            drain_field: None,
         }
     }
 
@@ -346,23 +348,20 @@ impl DrainTree {
             .split(' ')
             .map(|t| t.trim())
             .map(|t| {
-                match filter_patterns.iter().map(|p| p.match_against(t)).filter(|o| o.is_some()).next() {
-                    Some(m) => {
-                        match m {
-                            Some(matches) => {
-                                println!("{:?}", matches);
-
-                                match matches.iter().next() {
-                                    Some((name, pattern)) => {
-                                        Token::Val(String::from(name))
-                                    },
-                                    None => Token::WildCard
-                                }
-                            },
-                            None => Token::Val(String::from(t))
-                        }
+                match filter_patterns
+                    .iter()
+                    .map(|p| p.match_against(t))
+                    .filter(|o| o.is_some())
+                    .next()
+                {
+                    Some(m) => match m {
+                        Some(matches) => match matches.iter().next() {
+                            Some((name, _pattern)) => Token::Val(String::from(name)),
+                            None => Token::WildCard,
+                        },
+                        None => Token::Val(String::from(t)),
                     },
-                    None => Token::Val(String::from(t))
+                    None => Token::Val(String::from(t)),
                 }
             })
             .collect()
@@ -404,7 +403,7 @@ impl DrainTree {
     }
 
     pub fn add_log_line(&mut self, log_line: String) {
-        let processed_line : Option<String> = match &self.overall_pattern {
+        let processed_line: Option<String> = match &self.overall_pattern {
             Some(p) => {
                 match p.match_against(log_line.as_str()) {
                     Some(matches) => {
@@ -412,11 +411,11 @@ impl DrainTree {
                             Some(s) => Option::Some(String::from(s)),
                             None => Option::None
                         }
-                    },
-                    None => Option::None
+                    }
+                    None => Option::None,
                 }
-            },
-            None => Option::None
+            }
+            None => Option::None,
         };
         let tokens = DrainTree::process(&self.filter_patterns, processed_line.unwrap_or(log_line));
         let len = tokens.len();
@@ -437,5 +436,68 @@ impl DrainTree {
             .values()
             .flat_map(|n| n.log_groups())
             .collect::<Vec<&DrainTreeLogGroup>>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tokens_from(strs: &[&str]) -> Vec<Token> {
+        let mut v = Vec::with_capacity(strs.len());
+        for s in strs.iter() {
+            if *s == WILDCARD {
+                v.push(Token::WildCard)
+            } else {
+                v.push(Token::Val(String::from(*s)))
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn similarity_check() {
+        let tokens = tokens_from(&["foo", WILDCARD, "foo", "bar", "baz"]);
+        let template = tokens_from(&["foo", "bar", WILDCARD, "bar", "baz"]);
+        let group = DrainTreeLogGroup::new(template);
+        let similarity = group.similarity(tokens.as_slice());
+
+        assert_eq!(similarity.exact_similarity, 0.6);
+        assert_eq!(similarity.approximate_similarity, 0.8);
+    }
+
+    #[test]
+    fn best_group() {
+        let tokens = tokens_from(&["foo", WILDCARD, "foo", "bar", "baz"]);
+
+        let leaf = LeafNode {
+            log_groups: vec![
+                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", WILDCARD, "bar", "baz"])),
+                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", "other", "bar", "baz"])),
+                DrainTreeLogGroup::new(tokens_from(&["a", "b", WILDCARD, "c", "baz"])),
+            ],
+        };
+
+        let best_group = leaf
+            .best_group(tokens.as_slice())
+            .expect("missing best group");
+
+        assert_eq!(best_group.group_index, 0);
+        assert_eq!(best_group.similarity.exact_similarity, 0.6);
+        assert_eq!(best_group.similarity.approximate_similarity, 0.8);
+
+        let leaf = LeafNode {
+            log_groups: vec![
+                DrainTreeLogGroup::new(tokens_from(&["a", "b", WILDCARD, "c", "baz"])),
+                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", "other", "bar", "baz"])),
+            ],
+        };
+        let best_group = leaf
+            .best_group(tokens.as_slice())
+            .expect("missing best group");
+
+        assert_eq!(best_group.group_index, 1);
+        assert_eq!(best_group.similarity.exact_similarity, 0.6);
+        assert_eq!(best_group.similarity.approximate_similarity, 0.6);
     }
 }
