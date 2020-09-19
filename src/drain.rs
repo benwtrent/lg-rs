@@ -7,7 +7,7 @@ use std::fmt::{Display, Formatter};
 
 const WILDCARD: &str = "<*>";
 
-#[derive(Eq, PartialEq, Hash)]
+#[derive(Eq, PartialEq, Hash, Debug)]
 pub enum Token {
     WildCard,
     Val(String),
@@ -499,5 +499,67 @@ mod tests {
         assert_eq!(best_group.group_index, 1);
         assert_eq!(best_group.similarity.exact_similarity, 0.6);
         assert_eq!(best_group.similarity.approximate_similarity, 0.6);
+    }
+
+    #[test]
+    fn add_group() {
+        let tokens = tokens_from(&["foo", WILDCARD, "foo", "bar", "baz"]);
+        let min_sim = 0.5;
+        let leaf_ctor = || LeafNode {
+            log_groups: vec![
+                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", WILDCARD, "bar", "baz"])),
+                DrainTreeLogGroup::new(tokens_from(&["foo", "bar", "other", "bar", "baz"])),
+                DrainTreeLogGroup::new(tokens_from(&["a", "b", WILDCARD, "c", "baz"])),
+            ],
+        };
+
+        // Add new group as no similarity was provided
+        {
+            let mut leaf = leaf_ctor();
+            leaf.add_to_group(Option::None, &min_sim, tokens.as_slice());
+            assert_eq!(leaf.log_groups.len(), 4);
+        }
+        // lower than minimum similarity, new group is added
+        {
+            let mut leaf = leaf_ctor();
+            leaf.add_to_group(
+                Option::Some(GroupAndSimilarity {
+                    group_index: 1,
+                    similarity: GroupSimilarity {
+                        exact_similarity: 0.1,
+                        approximate_similarity: 0.1,
+                    },
+                }),
+                &min_sim,
+                tokens.as_slice(),
+            );
+            assert_eq!(leaf.log_groups.len(), 4);
+        }
+
+        {
+            let mut leaf = leaf_ctor();
+            leaf.add_to_group(Option::None, &min_sim, tokens.as_slice());
+            assert_eq!(leaf.log_groups.len(), 4);
+        }
+        // adds new group and adjusts stored tokens
+        {
+            let mut leaf = leaf_ctor();
+            leaf.add_to_group(
+                Option::Some(GroupAndSimilarity {
+                    group_index: 0,
+                    similarity: GroupSimilarity {
+                        exact_similarity: 0.6,
+                        approximate_similarity: 0.6,
+                    },
+                }),
+                &min_sim,
+                tokens.as_slice(),
+            );
+            assert_eq!(leaf.log_groups.len(), 3);
+            assert_eq!(
+                leaf.log_groups[0].log_tokens,
+                tokens_from(&["foo", WILDCARD, WILDCARD, "bar", "baz"])
+            );
+        }
     }
 }
