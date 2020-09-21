@@ -8,10 +8,11 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 
 #[derive(Eq, PartialEq, Hash, Debug)]
-pub enum Token {
+enum Token {
     WildCard,
     Val(String),
 }
+
 struct TokenVisitor;
 impl<'de> Visitor<'de> for TokenVisitor {
     type Value = Token;
@@ -111,7 +112,7 @@ impl fmt::Display for LogCluster {
 }
 
 impl LogCluster {
-    pub fn new(log_tokens: Vec<Token>) -> LogCluster {
+    fn new(log_tokens: Vec<Token>) -> LogCluster {
         LogCluster {
             log_tokens,
             num_matched: 1,
@@ -145,7 +146,7 @@ impl LogCluster {
         }
     }
 
-    pub fn add_log(&mut self, log: &[Token]) {
+    fn add_log(&mut self, log: &[Token]) {
         for i in 0..log.len() {
             let token = &self.log_tokens[i];
             if token != &Token::WildCard {

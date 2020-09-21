@@ -177,7 +177,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "grok",
- "regex",
  "serde",
  "serde_json",
 ]
