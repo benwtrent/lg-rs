@@ -1,4 +1,6 @@
 use grok;
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -9,6 +11,43 @@ use std::fmt::{Display, Formatter};
 pub enum Token {
     WildCard,
     Val(String),
+}
+struct TokenVisitor;
+impl<'de> Visitor<'de> for TokenVisitor {
+    type Value = Token;
+
+    fn expecting(&self, formatter: &mut Formatter) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        if value == "<*>" {
+            Ok(Token::WildCard)
+        } else {
+            Ok(Token::Val(String::from(value)))
+        }
+    }
+}
+
+impl Serialize for Token {
+    fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.to_string().as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Token {
+    fn deserialize<D>(deserializer: D) -> Result<Self, <D as Deserializer<'de>>::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(TokenVisitor)
+    }
 }
 
 impl fmt::Display for Token {
@@ -50,7 +89,7 @@ impl core::cmp::PartialOrd for GroupSimilarity {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LogCluster {
     log_tokens: Vec<Token>,
     num_matched: u64,
@@ -77,6 +116,14 @@ impl LogCluster {
             log_tokens,
             num_matched: 1,
         }
+    }
+
+    pub fn as_string(&self) -> String {
+        self.log_tokens
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<String>>()
+            .join(" ")
     }
 
     fn similarity(&self, log: &[Token]) -> GroupSimilarity {
@@ -112,7 +159,7 @@ impl LogCluster {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Leaf {
     log_groups: Vec<LogCluster>,
 }
@@ -165,13 +212,13 @@ impl Leaf {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Inner {
     children: HashMap<Token, Node>,
     depth: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 enum Node {
     Inner(Inner),
     Leaf(Leaf),
@@ -288,14 +335,19 @@ impl Node {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct DrainTree {
     root: HashMap<usize, Node>,
     max_depth: u16,
     max_children: u16,
     min_similarity: f32,
+    overall_pattern_str: Option<String>,
+    #[serde(skip)]
     overall_pattern: Option<grok::Pattern>,
     drain_field: Option<String>,
+    #[serde(skip)]
     filter_patterns: Vec<grok::Pattern>,
+    filter_patterns_str: Vec<String>,
 }
 
 impl Display for DrainTree {
@@ -312,11 +364,13 @@ impl DrainTree {
     pub fn new() -> Self {
         DrainTree {
             root: HashMap::new(),
+            filter_patterns_str: vec![],
             filter_patterns: vec![],
             max_depth: 5,
             max_children: 100,
             min_similarity: 0.5,
             overall_pattern: None,
+            overall_pattern_str: None,
             drain_field: None,
         }
     }
@@ -336,14 +390,36 @@ impl DrainTree {
         self
     }
 
-    pub fn filter_patterns(mut self, filter_patterns: Vec<grok::Pattern>) -> Self {
-        self.filter_patterns = filter_patterns;
+    pub fn filter_patterns(mut self, filter_patterns: Vec<&str>) -> Self {
+        self.filter_patterns_str = filter_patterns
+            .iter()
+            .map(|s| String::from(*s))
+            .collect::<Vec<String>>();
         self
     }
 
-    pub fn log_pattern(mut self, overall_pattern: grok::Pattern, drain_field: &str) -> Self {
-        self.overall_pattern = Some(overall_pattern);
+    pub fn log_pattern(mut self, overall_pattern: &str, drain_field: &str) -> Self {
+        self.overall_pattern_str = Some(String::from(overall_pattern));
         self.drain_field = Some(String::from(drain_field));
+        self
+    }
+
+    // ugh, I don't like this. Would it be better to have a separate struct for building
+    // and then returning a DrainTree?
+    pub fn build_patterns(mut self, grok: &mut grok::Grok) -> Self {
+        if let Some(pattern_str) = &self.overall_pattern_str {
+            self.overall_pattern = Some(
+                grok.compile(pattern_str.as_str(), true)
+                    .expect("poorly formatted overall_pattern"),
+            );
+        }
+        let mut filter_patterns = Vec::with_capacity(*&self.filter_patterns_str.len());
+        for pattern in &self.filter_patterns_str {
+            if let Ok(c) = grok.compile(pattern.as_str(), true) {
+                filter_patterns.push(c);
+            }
+        }
+        self.filter_patterns = filter_patterns;
         self
     }
 
@@ -419,6 +495,11 @@ impl DrainTree {
         }
     }
 
+    fn is_compiled(&self) -> bool {
+        self.filter_patterns.len() == self.filter_patterns_str.len()
+            || self.overall_pattern.is_some()
+    }
+
     pub fn log_group(&self, log_line: &str) -> Option<&LogCluster> {
         let processed_line = self.apply_overall_pattern(log_line);
         let tokens = DrainTree::process(
@@ -457,6 +538,8 @@ impl DrainTree {
 
 #[cfg(test)]
 mod tests {
+    extern crate serde_json;
+
     const WILDCARD: &str = "<*>";
     use super::*;
 
@@ -591,10 +674,7 @@ mod tests {
 
         let mut g = grok::Grok::with_patterns();
 
-        let filter_patterns = vec![
-            g.compile("%{IPV4:ip_address}", true).expect("bad pattern"),
-            g.compile("%{NUMBER:user_id}", true).expect("bad pattern"),
-        ];
+        let filter_patterns = vec!["%{IPV4:ip_address}", "%{NUMBER:user_id}"];
 
         let mut drain = DrainTree::new()
             .filter_patterns(filter_patterns)
@@ -602,13 +682,10 @@ mod tests {
             .max_children(100)
             .min_similarity(0.5)
             .log_pattern(
-                g.compile(
-                    "%{NUMBER:id} \\[%{LOGLEVEL:level}\\] %{GREEDYDATA:content}",
-                    true,
-                )
-                .expect("bad pattern"),
+                "%{NUMBER:id} \\[%{LOGLEVEL:level}\\] %{GREEDYDATA:content}",
                 "content",
-            );
+            )
+            .build_patterns(&mut g);
 
         for log in logs {
             drain.add_log_line(log);
@@ -617,22 +694,63 @@ mod tests {
             drain
                 .log_group(&"10 [INFO] user 40 called 192.168.10.2")
                 .expect("missing expected log group")
-                .log_tokens
-                .iter()
-                .map(|t| t.to_string())
-                .collect::<Vec<String>>()
-                .join(" "),
+                .as_string(),
             "user <user_id> called <ip_address>"
         );
         assert_eq!(
             drain
                 .log_group(&"2 [INFO] something uninteresting happened")
                 .expect("missing expected log group")
-                .log_tokens
-                .iter()
-                .map(|t| t.to_string())
-                .collect::<Vec<String>>()
-                .join(" "),
+                .as_string(),
+            "something uninteresting happened"
+        );
+    }
+
+    #[test]
+    fn dump_and_load() {
+        let logs = vec![
+            "1 [INFO] user 3 called 192.0.0.1",
+            "2 [INFO] user 2 called 127.0.0.1",
+            "3 [DEBUG] something uninteresting happened",
+            "4 [INFO] user 4 called 10.0.0.1",
+        ];
+
+        let mut g = grok::Grok::with_patterns();
+
+        let filter_patterns = vec!["%{IPV4:ip_address}", "%{NUMBER:user_id}"];
+
+        let mut drain = DrainTree::new()
+            .filter_patterns(filter_patterns)
+            .max_depth(4)
+            .max_children(100)
+            .min_similarity(0.5)
+            .log_pattern(
+                "%{NUMBER:id} \\[%{LOGLEVEL:level}\\] %{GREEDYDATA:content}",
+                "content",
+            )
+            .build_patterns(&mut g);
+
+        for log in logs {
+            drain.add_log_line(log);
+        }
+
+        let serialized = serde_json::to_string(&drain).expect("serialization failure");
+
+        let other: DrainTree = serde_json::from_str(serialized.as_str()).unwrap();
+        let other = other.build_patterns(&mut g);
+
+        assert_eq!(
+            other
+                .log_group(&"10 [INFO] user 40 called 192.168.10.2")
+                .expect("missing expected log group")
+                .as_string(),
+            "user <user_id> called <ip_address>"
+        );
+        assert_eq!(
+            other
+                .log_group(&"2 [INFO] something uninteresting happened")
+                .expect("missing expected log group")
+                .as_string(),
             "something uninteresting happened"
         );
     }
