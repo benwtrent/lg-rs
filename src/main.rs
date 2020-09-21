@@ -1,7 +1,6 @@
 mod drain;
 
 use crate::drain::DrainTree;
-use clap;
 use grok;
 use std::env;
 use std::fs;
@@ -28,7 +27,7 @@ fn main() {
     };
     for line in reader.lines() {
         if let Ok(s) = line {
-            drain.add_log_line(s);
+            drain.add_log_line(s.as_str());
         }
     }
     drain.log_groups().iter().for_each(|f| println!("{}", *f));

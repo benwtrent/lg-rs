@@ -5,8 +5,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 
-const WILDCARD: &str = "<*>";
-
 #[derive(Eq, PartialEq, Hash, Debug)]
 pub enum Token {
     WildCard,
@@ -52,6 +50,7 @@ impl core::cmp::PartialOrd for GroupSimilarity {
     }
 }
 
+#[derive(Debug)]
 pub struct LogCluster {
     log_tokens: Vec<Token>,
     num_matched: u64,
@@ -113,6 +112,7 @@ impl LogCluster {
     }
 }
 
+#[derive(Debug)]
 struct Leaf {
     log_groups: Vec<LogCluster>,
 }
@@ -165,11 +165,13 @@ impl Leaf {
     }
 }
 
+#[derive(Debug)]
 struct Inner {
     children: HashMap<Token, Node>,
     depth: usize,
 }
 
+#[derive(Debug)]
 enum Node {
     Inner(Inner),
     Leaf(Leaf),
@@ -235,8 +237,7 @@ impl Node {
         min_similarity: &f32,
         log_tokens: &[Token],
     ) {
-        let next = depth + 1;
-        let token = match &log_tokens[next] {
+        let token = match &log_tokens[depth] {
             Token::Val(s) => {
                 if s.chars().any(|c| c.is_numeric()) {
                     Token::WildCard
@@ -246,7 +247,7 @@ impl Node {
             }
             Token::WildCard => Token::WildCard,
         };
-        if next == log_tokens.len() - 1 || next == *max_depth as usize {
+        if depth == log_tokens.len() - 1 || depth == *max_depth as usize {
             if let Node::Inner(node) = self {
                 let child = node.children.entry(token).or_insert(Node::leaf());
                 if let Node::Leaf(leaf) = child {
@@ -264,11 +265,20 @@ impl Node {
                     inner
                         .children
                         .entry(Token::WildCard)
-                        .or_insert(Node::inner(next))
+                        .or_insert(Node::inner(depth + 1))
                 } else {
-                    inner.children.entry(token).or_insert(Node::inner(next))
+                    inner
+                        .children
+                        .entry(token)
+                        .or_insert(Node::inner(depth + 1))
                 };
-                child.add_child_recur(next, max_depth, max_children, min_similarity, log_tokens);
+                child.add_child_recur(
+                    depth + 1,
+                    max_depth,
+                    max_children,
+                    min_similarity,
+                    log_tokens,
+                );
             }
             Node::Leaf(leaf) => {
                 let best_group = leaf.best_group(log_tokens);
@@ -350,7 +360,7 @@ impl DrainTree {
                 {
                     Some(m) => match m {
                         Some(matches) => match matches.iter().next() {
-                            Some((name, _pattern)) => Token::Val(String::from(name)),
+                            Some((name, _pattern)) => Token::Val(format!("<{}>", name)),
                             None => Token::WildCard,
                         },
                         None => Token::Val(String::from(t)),
@@ -366,22 +376,23 @@ impl DrainTree {
         child: &'a Node,
         processed_log: &[Token],
     ) -> Option<&'a LogCluster> {
-        let mut current_node = child;
-        for t in processed_log.iter() {
-            match current_node {
-                Node::Leaf(leaf) => {
-                    return match leaf.best_group(processed_log) {
-                        Some(gas) => Some(&leaf.log_groups[gas.group_index]),
-                        None => return None,
-                    };
+        let mut current_node = Some(child);
+        for t in processed_log {
+            if let Some(node) = current_node {
+                if let Node::Inner(inner) = node {
+                    current_node = inner.children.get(t);
                 }
-                Node::Inner(node) => match node.children.get(t) {
-                    Some(n) => current_node = n,
-                    None => return None,
-                },
             }
         }
-        return None;
+        if let Some(node) = current_node {
+            if let Node::Leaf(leaf) = node {
+                return match leaf.best_group(processed_log) {
+                    Some(gas) => Some(&leaf.log_groups[gas.group_index]),
+                    None => None,
+                };
+            }
+        }
+        None
     }
 
     fn log_group_for_tokens(&self, processed_log: &[Token]) -> Option<&LogCluster> {
@@ -391,15 +402,10 @@ impl DrainTree {
         }
     }
 
-    pub fn log_group(&self, log: String) -> Option<&LogCluster> {
-        let tokens = DrainTree::process(&self.filter_patterns, log);
-        self.log_group_for_tokens(tokens.as_slice())
-    }
-
-    pub fn add_log_line(&mut self, log_line: String) {
-        let processed_line: Option<String> = match &self.overall_pattern {
+    fn apply_overall_pattern(&self, log_line: &str) -> Option<String> {
+        match &self.overall_pattern {
             Some(p) => {
-                match p.match_against(log_line.as_str()) {
+                match p.match_against(log_line) {
                     Some(matches) => {
                         match matches.get(self.drain_field.as_ref().expect("illegal state. [overall_pattern] set without [drain_field] set").as_str()) {
                             Some(s) => Option::Some(String::from(s)),
@@ -410,8 +416,24 @@ impl DrainTree {
                 }
             }
             None => Option::None,
-        };
-        let tokens = DrainTree::process(&self.filter_patterns, processed_line.unwrap_or(log_line));
+        }
+    }
+
+    pub fn log_group(&self, log_line: &str) -> Option<&LogCluster> {
+        let processed_line = self.apply_overall_pattern(log_line);
+        let tokens = DrainTree::process(
+            &self.filter_patterns,
+            processed_line.unwrap_or(log_line.to_string()),
+        );
+        self.log_group_for_tokens(tokens.as_slice())
+    }
+
+    pub fn add_log_line(&mut self, log_line: &str) {
+        let processed_line = self.apply_overall_pattern(log_line);
+        let tokens = DrainTree::process(
+            &self.filter_patterns,
+            processed_line.unwrap_or(log_line.to_string()),
+        );
         let len = tokens.len();
         self.root
             .entry(len)
@@ -435,6 +457,7 @@ impl DrainTree {
 
 #[cfg(test)]
 mod tests {
+    const WILDCARD: &str = "<*>";
     use super::*;
 
     fn tokens_from(strs: &[&str]) -> Vec<Token> {
@@ -555,5 +578,62 @@ mod tests {
                 tokens_from(&["foo", WILDCARD, WILDCARD, "bar", "baz"])
             );
         }
+    }
+
+    #[test]
+    fn log_clustering() {
+        let logs = vec![
+            "1 [INFO] user 3 called 192.0.0.1",
+            "2 [INFO] user 2 called 127.0.0.1",
+            "3 [DEBUG] something uninteresting happened",
+            "4 [INFO] user 4 called 10.0.0.1",
+        ];
+
+        let mut g = grok::Grok::with_patterns();
+
+        let filter_patterns = vec![
+            g.compile("%{IPV4:ip_address}", true).expect("bad pattern"),
+            g.compile("%{NUMBER:user_id}", true).expect("bad pattern"),
+        ];
+
+        let mut drain = DrainTree::new()
+            .filter_patterns(filter_patterns)
+            .max_depth(4)
+            .max_children(100)
+            .min_similarity(0.5)
+            .log_pattern(
+                g.compile(
+                    "%{NUMBER:id} \\[%{LOGLEVEL:level}\\] %{GREEDYDATA:content}",
+                    true,
+                )
+                .expect("bad pattern"),
+                "content",
+            );
+
+        for log in logs {
+            drain.add_log_line(log);
+        }
+        assert_eq!(
+            drain
+                .log_group(&"10 [INFO] user 40 called 192.168.10.2")
+                .expect("missing expected log group")
+                .log_tokens
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<String>>()
+                .join(" "),
+            "user <user_id> called <ip_address>"
+        );
+        assert_eq!(
+            drain
+                .log_group(&"2 [INFO] something uninteresting happened")
+                .expect("missing expected log group")
+                .log_tokens
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<String>>()
+                .join(" "),
+            "something uninteresting happened"
+        );
     }
 }
