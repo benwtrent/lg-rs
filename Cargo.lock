@@ -107,6 +107,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "drain-rs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "038277805ef6806d83c507772bacd858c7b613454114208dc293531423803eaa"
+dependencies = [
+ "grok",
+ "serde",
+]
+
+[[package]]
 name = "env_logger"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -176,8 +186,8 @@ name = "lg-rs"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "drain-rs",
  "grok",
- "serde",
  "serde_json",
 ]
 
