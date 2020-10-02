@@ -10,6 +10,4 @@ edition = "2018"
 clap = "2"
 drain-rs = "0.2.0"
 grok = "1.1.0"
-
-[dev-dependencies]
 serde_json = "~1"

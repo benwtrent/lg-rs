@@ -1,15 +1,17 @@
-# drain-rs
+# lg-rs
 
-Drain provides a machinism for online log categorization.
+Command line utility for creating log groupings.
 
-The goal of this particular project is to provide a nice, fast, rust upgrade to the original [drain](https://github.com/logpai/logparser/tree/master/logparser/Drain) implementation.
-Original paper here:
-- Pinjia He, Jieming Zhu, Zibin Zheng, and Michael R. Lyu. [Drain: An Online Log Parsing Approach with Fixed Depth Tree](http://jmzhu.logpai.com/pub/pjhe_icws2017.pdf), Proceedings of the 24th International Conference on Web Services (ICWS), 2017.
+This is built on [drain-rs](https://github.com/benwtrent/drain-rs/)
 
-- [x] Implement basic algorithm
-- [x] Utilize GROK instead of vanilla regex for template creation (allows type inferrence, better patterns). Along with supporting GROK, the ability to add custom patterns would be nice.
-- [x] Add ability to set Overall log template. Some logs have a well known format and auto parsing is not particularly useful for known formats. But, usually, known formats have free text fields, and those would benefit from some auto parsing
-- [ ] Decouple command line utility from drain implementation
-- [x] ability to save and read in state
+Usage:
 
-This is a WIP, 0.0.x
+Creating a new model
+```
+lg-rs HDFS_2k.log --log-pattern="%{NUMBER:date} %{NUMBER:time} %{NUMBER:proc} %{LOGLEVEL:level} %{DATA:component}: %{GREEDYDATA:content}" --filter-patterns="blk_(|-)[0-9]+,%{IPV4:ip_address},%{NUMBER:number}" --output-model=dump.json
+```
+
+Reading from an existing one
+```
+cat HDFS_2k.log | lg-rs --from-model=dump.json
+```
